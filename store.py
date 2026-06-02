@@ -22,6 +22,8 @@ SETTINGS_FILE = APP_DIR / "settings.json"
 
 # Credential Manager identifiers (only used when keyring is available).
 _KEYRING_SERVICE = "CV-Emailer"
+# Fixed account name under which the Hunter.io API key is stored.
+_HUNTER_KEY_USER = "__hunter_api_key__"
 
 try:  # keyring is optional; the app still works without it.
     import keyring  # type: ignore
@@ -211,3 +213,28 @@ def delete_password(username: str) -> None:
         keyring.delete_password(_KEYRING_SERVICE, username)
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# Hunter.io API key (stored in Credential Manager, never in a file)
+# --------------------------------------------------------------------------- #
+def save_hunter_key(key: str) -> bool:
+    if not _HAS_KEYRING:
+        return False
+    try:
+        if key:
+            keyring.set_password(_KEYRING_SERVICE, _HUNTER_KEY_USER, key)
+        else:
+            keyring.delete_password(_KEYRING_SERVICE, _HUNTER_KEY_USER)
+        return True
+    except Exception:
+        return False
+
+
+def load_hunter_key() -> str:
+    if not _HAS_KEYRING:
+        return ""
+    try:
+        return keyring.get_password(_KEYRING_SERVICE, _HUNTER_KEY_USER) or ""
+    except Exception:
+        return ""

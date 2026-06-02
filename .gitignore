@@ -1,9 +1,17 @@
 # --- Your private data: never commit these ---
-settings.json          # SMTP host / your email address
-recipients.json        # your contact list
-draft.json             # your saved email + attachment paths
-*.pdf                  # your CV and other attachments
+# (Comments MUST be on their own line; Git has no inline comments.)
+
+# SMTP host / your email address
+settings.json
+# your contact list
+recipients.json
+# your saved email + attachment paths
+draft.json
+
+# your CV and other attachments
+*.pdf
 *.docx
+*.doc
 
 # --- Python ---
 __pycache__/

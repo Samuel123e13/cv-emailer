@@ -41,6 +41,24 @@ Jane Smith,jane.smith@example.com,Example Recruiters
 
 See `sample_recipients.csv`.
 
+## Finding recruiter emails (Hunter.io)
+
+If you don't already have a list of contacts, the **Find emails (Hunter.io)**
+button on the Recipients tab can look them up for you using
+[Hunter.io](https://hunter.io)'s official API — a legitimate, Terms-of-Service
+compliant service for finding *published* business emails (no scraping).
+
+1. Sign up at [hunter.io](https://hunter.io) for a **free** API key
+   (50 searches/month).
+2. Paste it when the app asks; it's stored in Windows Credential Manager.
+3. Click **Find emails (Hunter.io)**, enter company domains (one per line,
+   e.g. `crowdstrike.com`), and click **Search**. Each company costs one search.
+4. Rows that look like recruiters / HR are highlighted green and listed first.
+   Select the ones you want and click **Add selected to recipients**.
+
+> This finds business contacts companies have made public. Always send
+> responsibly — relevant, individual applications, not indiscriminate bulk mail.
+
 ## Important: university / Microsoft 365 email
 
 Many universities (including Microsoft 365 tenants) **disable "SMTP basic

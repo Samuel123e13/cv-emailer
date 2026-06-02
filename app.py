@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 import store
+import finder
 from sender import (
     SmtpConfig,
     SendReport,
@@ -87,7 +88,8 @@ class CVEmailer(tk.Tk):
         ttk.Button(bar, text="Edit", command=self._edit_recipient).pack(side="left", padx=4)
         ttk.Button(bar, text="Remove", command=self._remove_recipient).pack(side="left")
         ttk.Button(bar, text="Import CSV / Excel…", command=self._import_recipients).pack(side="left", padx=4)
-        ttk.Button(bar, text="Clear all", command=self._clear_recipients).pack(side="left")
+        ttk.Button(bar, text="Find emails (Hunter.io)…", command=self._open_finder).pack(side="left")
+        ttk.Button(bar, text="Clear all", command=self._clear_recipients).pack(side="left", padx=4)
         self.lbl_count = ttk.Label(bar, text="")
         self.lbl_count.pack(side="right")
 
@@ -313,6 +315,29 @@ class CVEmailer(tk.Tk):
             f"Imported {added} new recipient(s).\n"
             f"({len(imported) - added} duplicate(s) skipped.)",
         )
+
+    def _open_finder(self) -> None:
+        api_key = store.load_hunter_key()
+        if not api_key:
+            messagebox.showwarning(
+                APP_TITLE,
+                "No Hunter.io API key saved.\n\n"
+                "Sign up for a free key at hunter.io, then I'll store it for you.",
+            )
+            return
+        found = FinderDialog(self, api_key).added
+        if not found:
+            return
+        existing = {r["email"].lower() for r in self.recipients}
+        added = 0
+        for rec in found:
+            if rec["email"] and rec["email"].lower() not in existing:
+                self.recipients.append(rec)
+                existing.add(rec["email"].lower())
+                added += 1
+        store.save_recipients(self.recipients)
+        self._refresh_recipient_table()
+        messagebox.showinfo(APP_TITLE, f"Added {added} new contact(s) to your list.")
 
     # ------------------------------------------------------------------ #
     # Compose logic
@@ -634,6 +659,170 @@ class PreviewDialog(tk.Toplevel):
         txt.pack(fill="both", expand=True, padx=8, pady=8)
         ttk.Button(self, text="Close", command=self.destroy).pack(pady=6)
         self.grab_set()
+
+
+class FinderDialog(tk.Toplevel):
+    """Search company domains for published recruiter/HR emails via Hunter.io."""
+
+    def __init__(self, parent, api_key: str):
+        super().__init__(parent)
+        self.title("Find emails (Hunter.io)")
+        self.geometry("820x600")
+        self.transient(parent)
+        self.api_key = api_key
+        self.added: list[dict] = []
+        self._queue: "queue.Queue" = queue.Queue()
+        self._busy = False
+        self._row_data: dict[str, dict] = {}  # tree item id -> recipient dict
+
+        pad = {"padx": 8, "pady": 4}
+        top = ttk.Frame(self)
+        top.pack(fill="x", **pad)
+        ttk.Label(
+            top,
+            text=("Enter company domains or names, one per line "
+                  "(e.g. crowdstrike.com, paloaltonetworks.com).\n"
+                  "Each company uses ONE of your free Hunter searches."),
+            foreground="#444", justify="left",
+        ).pack(anchor="w")
+
+        mid = ttk.Frame(self)
+        mid.pack(fill="x", **pad)
+        self.txt_domains = tk.Text(mid, height=5, wrap="word")
+        self.txt_domains.pack(side="left", fill="both", expand=True)
+        opts = ttk.Frame(mid)
+        opts.pack(side="left", fill="y", padx=6)
+        ttk.Label(opts, text="Max per company:").pack(anchor="w")
+        self.var_limit = tk.StringVar(value="10")
+        ttk.Spinbox(opts, from_=1, to=100, width=6, textvariable=self.var_limit).pack(anchor="w")
+        self.var_recruiters_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opts, text="Recruiter/HR roles only",
+                        variable=self.var_recruiters_only).pack(anchor="w", pady=4)
+        self.btn_search = ttk.Button(opts, text="Search", command=self._search)
+        self.btn_search.pack(anchor="w", fill="x")
+
+        self.lbl_status = ttk.Label(self, text="", foreground="#0969da")
+        self.lbl_status.pack(anchor="w", padx=8)
+
+        # Results table
+        cols = ("name", "email", "company", "position", "conf")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
+        for c, head, w in [("name", "Name", 150), ("email", "Email", 230),
+                           ("company", "Company", 140), ("position", "Position", 170),
+                           ("conf", "Conf%", 50)]:
+            self.tree.heading(c, text=head)
+            self.tree.column(c, width=w)
+        self.tree.tag_configure("recruiter", background="#e6ffed")
+        self.tree.pack(fill="both", expand=True, padx=8, pady=4)
+
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", **pad)
+        ttk.Button(btns, text="Select all", command=lambda: self.tree.selection_set(self.tree.get_children())).pack(side="left")
+        ttk.Button(btns, text="Add selected to recipients", command=self._add_selected).pack(side="left", padx=6)
+        ttk.Button(btns, text="Close", command=self.destroy).pack(side="right")
+        ttk.Label(btns, text="Tip: green rows look like recruiters/HR.",
+                  foreground="#1a7f37").pack(side="right", padx=8)
+
+        self._check_account()
+        self.grab_set()
+
+    # -- account quota (shown in the status line) -- #
+    def _check_account(self):
+        def worker():
+            try:
+                info = finder.account_info(self.api_key)
+                self._queue.put(("account", info))
+            except Exception as exc:  # noqa: BLE001
+                self._queue.put(("account_err", str(exc)))
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def _search(self):
+        if self._busy:
+            return
+        raw = self.txt_domains.get("1.0", "end-1c").splitlines()
+        domains = [d.strip() for d in raw if d.strip()]
+        if not domains:
+            messagebox.showinfo("Find emails", "Type at least one company domain.")
+            return
+        try:
+            limit = max(1, min(100, int(self.var_limit.get())))
+        except ValueError:
+            limit = 10
+        self.tree.delete(*self.tree.get_children())
+        self._row_data.clear()
+        self._busy = True
+        self.btn_search.config(state="disabled")
+        self.lbl_status.config(text=f"Searching {len(domains)} company(ies)…")
+
+        recruiters_only = self.var_recruiters_only.get()
+
+        def worker():
+            for d in domains:
+                try:
+                    contacts = finder.domain_search(self.api_key, d, limit=limit)
+                    self._queue.put(("found", d, contacts, recruiters_only))
+                except Exception as exc:  # noqa: BLE001
+                    self._queue.put(("search_err", d, str(exc)))
+            self._queue.put(("search_done",))
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def _poll(self):
+        try:
+            while True:
+                item = self._queue.get_nowait()
+                kind = item[0]
+                if kind == "account":
+                    info = item[1]
+                    self.lbl_status.config(
+                        text=f"Hunter plan: {info['plan']} — "
+                             f"{info['used']}/{info['available']} searches used.")
+                elif kind == "account_err":
+                    self.lbl_status.config(text=f"(Could not read Hunter quota: {item[1]})")
+                elif kind == "found":
+                    _, domain, contacts, recruiters_only = item
+                    self._insert_contacts(domain, contacts, recruiters_only)
+                elif kind == "search_err":
+                    self._insert_error(item[1], item[2])
+                elif kind == "search_done":
+                    self._busy = False
+                    self.btn_search.config(state="normal")
+                    n = len(self.tree.get_children())
+                    self.lbl_status.config(text=f"Done. {n} contact(s) found. "
+                                                "Select the ones you want and click 'Add selected'.")
+                    return
+        except queue.Empty:
+            pass
+        if self._busy or not self.tree.get_children():
+            self.after(150, self._poll)
+
+    def _insert_contacts(self, domain, contacts, recruiters_only):
+        for c in contacts:
+            if recruiters_only and not c.is_recruiterish():
+                continue
+            tags = ("recruiter",) if c.is_recruiterish() else ()
+            item = self.tree.insert(
+                "", "end",
+                values=(c.name, c.email, c.company, c.position, c.confidence),
+                tags=tags,
+            )
+            self._row_data[item] = c.as_recipient()
+
+    def _insert_error(self, domain, msg):
+        item = self.tree.insert("", "end", values=("", f"⚠ {domain}: {msg}", "", "", ""))
+        # No row data -> can't be added.
+
+    def _add_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Find emails", "Select one or more rows first.")
+            return
+        for item in sel:
+            rec = self._row_data.get(item)
+            if rec and rec["email"]:
+                self.added.append(rec)
+        self.destroy()
 
 
 if __name__ == "__main__":
