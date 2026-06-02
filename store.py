@@ -19,6 +19,7 @@ APP_DIR = Path(__file__).resolve().parent
 RECIPIENTS_FILE = APP_DIR / "recipients.json"
 DRAFT_FILE = APP_DIR / "draft.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
+FOUND_CONTACTS_FILE = APP_DIR / "found_contacts.csv"
 
 # Credential Manager identifiers (only used when keyring is available).
 _KEYRING_SERVICE = "CV-Emailer"
@@ -61,6 +62,24 @@ def load_recipients() -> list[dict]:
 
 def save_recipients(recipients: list[dict]) -> None:
     _save_json(RECIPIENTS_FILE, recipients)
+
+
+def save_found_contacts(contacts: list[dict]) -> Path:
+    """Write all emails found by the finder to a CSV, so search results are
+    never lost even if the user doesn't add them. Overwrites each run.
+
+    ``contacts`` are dicts with name/email/company (extra keys like 'position'
+    are written too if present). The file is importable straight back in.
+    """
+    if not contacts:
+        return FOUND_CONTACTS_FILE
+    fields = ["name", "email", "company", "position"]
+    with open(FOUND_CONTACTS_FILE, "w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for c in contacts:
+            writer.writerow({k: c.get(k, "") for k in fields})
+    return FOUND_CONTACTS_FILE
 
 
 def import_recipients_from_file(path: str) -> list[dict]:

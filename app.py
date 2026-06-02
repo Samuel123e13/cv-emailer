@@ -674,6 +674,7 @@ class FinderDialog(tk.Toplevel):
         self._queue: "queue.Queue" = queue.Queue()
         self._busy = False
         self._row_data: dict[str, dict] = {}  # tree item id -> recipient dict
+        self._all_found: list[dict] = []  # every result this session (for auto-save)
 
         pad = {"padx": 8, "pady": 4}
         top = ttk.Frame(self)
@@ -724,7 +725,11 @@ class FinderDialog(tk.Toplevel):
                   foreground="#1a7f37").pack(side="right", padx=8)
 
         self._check_account()
+        self.after(100, self._poll)   # one persistent poll loop for the dialog
         self.grab_set()
+        # Block here until the dialog is closed, so the caller can read
+        # self.added afterwards. (Without this, .added is always empty.)
+        self.wait_window()
 
     # -- account quota (shown in the status line) -- #
     def _check_account(self):
@@ -735,7 +740,6 @@ class FinderDialog(tk.Toplevel):
             except Exception as exc:  # noqa: BLE001
                 self._queue.put(("account_err", str(exc)))
         threading.Thread(target=worker, daemon=True).start()
-        self.after(100, self._poll)
 
     def _search(self):
         if self._busy:
@@ -751,6 +755,7 @@ class FinderDialog(tk.Toplevel):
             limit = 10
         self.tree.delete(*self.tree.get_children())
         self._row_data.clear()
+        self._all_found.clear()
         self._busy = True
         self.btn_search.config(state="disabled")
         self.lbl_status.config(text=f"Searching {len(domains)} company(ies)…")
@@ -766,7 +771,6 @@ class FinderDialog(tk.Toplevel):
                     self._queue.put(("search_err", d, str(exc)))
             self._queue.put(("search_done",))
         threading.Thread(target=worker, daemon=True).start()
-        self.after(100, self._poll)
 
     def _poll(self):
         try:
@@ -788,14 +792,24 @@ class FinderDialog(tk.Toplevel):
                 elif kind == "search_done":
                     self._busy = False
                     self.btn_search.config(state="normal")
-                    n = len(self.tree.get_children())
-                    self.lbl_status.config(text=f"Done. {n} contact(s) found. "
-                                                "Select the ones you want and click 'Add selected'.")
-                    return
+                    n = len(self._all_found)
+                    saved = ""
+                    if self._all_found:
+                        # Persist every result to disk right away, so a search is
+                        # never wasted even if the user forgets to add them.
+                        path = store.save_found_contacts(self._all_found)
+                        saved = f"  (auto-saved to {path.name})"
+                    self.lbl_status.config(
+                        text=f"Done. {n} contact(s) found{saved}. "
+                             "Select rows and click 'Add selected'.")
         except queue.Empty:
             pass
-        if self._busy or not self.tree.get_children():
-            self.after(150, self._poll)
+        # Keep polling for the whole life of the dialog; stops on TclError when
+        # the window is destroyed.
+        try:
+            self.after(200, self._poll)
+        except tk.TclError:
+            pass
 
     def _insert_contacts(self, domain, contacts, recruiters_only):
         for c in contacts:
@@ -807,7 +821,10 @@ class FinderDialog(tk.Toplevel):
                 values=(c.name, c.email, c.company, c.position, c.confidence),
                 tags=tags,
             )
-            self._row_data[item] = c.as_recipient()
+            rec = c.as_recipient()
+            self._row_data[item] = rec
+            # Keep a full record (incl. position) for the auto-save safety net.
+            self._all_found.append({**rec, "position": c.position})
 
     def _insert_error(self, domain, msg):
         item = self.tree.insert("", "end", values=("", f"⚠ {domain}: {msg}", "", "", ""))
