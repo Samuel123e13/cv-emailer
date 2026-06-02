@@ -1,0 +1,25 @@
+# --- Your private data: never commit these ---
+settings.json          # SMTP host / your email address
+recipients.json        # your contact list
+draft.json             # your saved email + attachment paths
+*.pdf                  # your CV and other attachments
+*.docx
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Packaging output ---
+build/
+dist/
+*.spec
+
+# --- OS / editor noise ---
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
